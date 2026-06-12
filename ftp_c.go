@@ -1,7 +1,7 @@
 package main
 
 import (
-	"fmt"
+	"encoding/base64"
 	"io"
 	"log"
 	"os"
@@ -20,7 +20,6 @@ type SWinfo struct {
 
 // 读取交换机相关信息
 func readSWadd(fileName string) (swinfo []SWinfo) {
-	swinfo = make([]SWinfo, 64)
 
 	f, err := os.OpenFile(fileName, os.O_RDONLY, 0644)
 	if err != nil {
@@ -33,24 +32,44 @@ func readSWadd(fileName string) (swinfo []SWinfo) {
 	if err != nil {
 		log.Printf("io reader err  %s  ", err)
 	}
-	fmt.Println("read config ")
+	//fmt.Println("read config ")
 	//fmt.Println(string(buf))
-	str := strings.Split(string(buf), "\n")
-	fmt.Println(len(str))
-	fmt.Println(str)
-	for i := 0; i < len(str)-1; i++ {
-		fmt.Printf("str = %s\n", str[i])
-		swinfo[i].ipAddr = strings.Split(str[i], ":")[0]
-		swinfo[i].userIonf = strings.Split(str[i], ":")[1]
-		swinfo[i].passWd = strings.Split(str[i], ":")[2]
-		swinfo[i].backFileName = strings.Split(str[i], ":")[0] + ".cfg"
+	// 处理配置文件行
 
+	lines := strings.Split(string(buf), "\n")
+	//log.Printf("config file is : %s \n", lines)
+	for _, line := range lines {
+
+		line = strings.TrimSpace(line)
+		log.Printf("line === %s \n", line)
+		if line == "" {
+			continue
+		}
+		parts := strings.Split(line, ":")
+		if len(parts) < 3 {
+			log.Printf("跳过格式错误的行: %s", line)
+			continue
+		}
+		swinfo = append(swinfo, SWinfo{
+			ipAddr:       parts[0],
+			userIonf:     parts[1],
+			passWd:       parts[2],
+			backFileName: parts[0] + ".cfg",
+		})
 	}
 
 	return swinfo
 }
 
-//
+// base 64 编码
+func base64_t(password string) string {
+	decode, err := base64.StdEncoding.DecodeString(password)
+	if err != nil {
+		log.Fatalf("解密失败: %s \n", err)
+	}
+
+	return string(decode)
+}
 
 func backupCfg(username, password, host, backfile string) {
 
@@ -61,12 +80,13 @@ func backupCfg(username, password, host, backfile string) {
 	defer conn.Quit()
 
 	// 登录
+	//fmt.Println("password == ", password)
 	err = conn.Login(username, password)
 	if err != nil {
-		log.Fatal(err)
+		log.Printf("login failed ： %s \n", err)
 	}
 
-	fmt.Println("成功连sys/接并登录 FTP 服务器")
+	//fmt.Println("成功连sys/接并登录 FTP 服务器")
 
 	// 下载远程文件
 	resp, err := conn.Retr("/startup.cfg")
@@ -88,17 +108,29 @@ func backupCfg(username, password, host, backfile string) {
 		log.Printf("", err)
 	}
 
-	fmt.Println("文件下载成功")
+	//fmt.Println("文件下载成功")
 
 }
 
 func main() {
 
-	minfo := readSWadd("/home/zhangyq/Documents/work/config/config")
-	fmt.Println(minfo)
+	minfo := readSWadd("/data/backup/config")
+	log.Printf("共读取到 %d 台交换机配置", len(minfo))
+	//fmt.Println(minfo)
+
+	// 创建日志文件
+	logfile := "log/" + time.Now().Format("20060102") + ".log"
+
+	log_f, err := os.OpenFile(logfile, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0666)
+	if err != nil {
+		log.Printf("日志文件创建失败：%v", err)
+	}
+	defer log_f.Close()
+	log.SetOutput(log_f)
+
 	// 连接到 FTP 服务器
 
-	filePath := "/home/zhangyq/" + time.Now().Format("20060102") + "/"
+	filePath := "/data/backup/" + time.Now().Format("20060102") + "/"
 
 	if _, err := os.Stat(filePath); os.IsNotExist(err) {
 		// 目录不存在，创建它（包括父目录）
@@ -108,13 +140,16 @@ func main() {
 		}
 		log.Printf("目录已创建: %s", filePath)
 	}
-
+	successCount := 0
 	for k, v := range minfo {
 
 		log.Printf("正在备份第 %d 个交换机,地址是 %s ", k+1, v.ipAddr)
+
 		file := filePath + v.backFileName
-		backupCfg(v.userIonf, v.passWd, v.ipAddr, file)
+		backupCfg(v.userIonf, base64_t(v.passWd), v.ipAddr, file)
+		successCount++
 
 	}
+	log.Printf("========== 备份完成，成功 %d/%d 台 ==========", successCount, len(minfo))
 
 }
